@@ -844,6 +844,142 @@ fn operator_charge_usage_with_reference_succeeds() {
     assert_eq!(sub.prepaid_balance, DEPOSIT - usage);
 }
 
+#[test]
+fn operator_charge_usage_with_reference_wrong_operator_rejected_without_mutation() {
+    let te = TestEnv::default();
+    let subscriber = Address::generate(&te.env);
+    let merchant = Address::generate(&te.env);
+    let operator = Address::generate(&te.env);
+    let stranger = Address::generate(&te.env);
+
+    let sub_id = make_usage_enabled_subscription(&te, &subscriber, &merchant);
+    te.client.set_operator(&te.admin, &operator);
+
+    let before = te.client.get_subscription(&sub_id);
+    let ref_str = soroban_sdk::String::from_str(&te.env, "invoice-002");
+    let result = te
+        .client
+        .try_operator_charge_usage_with_ref(&stranger, &sub_id, &1_000_000i128, &ref_str);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    let after = te.client.get_subscription(&sub_id);
+    assert_eq!(after.prepaid_balance, before.prepaid_balance);
+    assert_eq!(after.lifetime_charged, before.lifetime_charged);
+    assert_eq!(after.status, before.status);
+}
+
+#[test]
+fn operator_charge_usage_with_reference_rejects_nonpositive_amounts_without_mutation() {
+    let te = TestEnv::default();
+    let subscriber = Address::generate(&te.env);
+    let merchant = Address::generate(&te.env);
+    let operator = Address::generate(&te.env);
+    let sub_id = make_usage_enabled_subscription(&te, &subscriber, &merchant);
+    te.client.set_operator(&te.admin, &operator);
+
+    let before = te.client.get_subscription(&sub_id);
+    let ref_str = soroban_sdk::String::from_str(&te.env, "invoice-003");
+    for usage in [i128::MIN, -1, 0] {
+        assert_eq!(
+            te.client
+                .try_operator_charge_usage_with_ref(&operator, &sub_id, &usage, &ref_str),
+            Err(Ok(Error::InvalidAmount))
+        );
+        let after = te.client.get_subscription(&sub_id);
+        assert_eq!(after.prepaid_balance, before.prepaid_balance);
+        assert_eq!(after.lifetime_charged, before.lifetime_charged);
+        assert_eq!(after.status, before.status);
+    }
+}
+
+#[test]
+fn operator_charge_usage_with_reference_rejects_unknown_subscription_without_mutation() {
+    let te = TestEnv::default();
+    let subscriber = Address::generate(&te.env);
+    let merchant = Address::generate(&te.env);
+    let operator = Address::generate(&te.env);
+    let sub_id = make_usage_enabled_subscription(&te, &subscriber, &merchant);
+    te.client.set_operator(&te.admin, &operator);
+
+    let before = te.client.get_subscription(&sub_id);
+    let ref_str = soroban_sdk::String::from_str(&te.env, "invoice-004");
+    let result = te
+        .client
+        .try_operator_charge_usage_with_ref(&operator, &u32::MAX, &1_000_000i128, &ref_str);
+    assert_eq!(result, Err(Ok(Error::NotFound)));
+
+    let after = te.client.get_subscription(&sub_id);
+    assert_eq!(after.prepaid_balance, before.prepaid_balance);
+    assert_eq!(after.lifetime_charged, before.lifetime_charged);
+    assert_eq!(after.status, before.status);
+}
+
+#[test]
+fn operator_charge_usage_with_reference_rejects_amount_above_balance_without_mutation() {
+    let te = TestEnv::default();
+    let subscriber = Address::generate(&te.env);
+    let merchant = Address::generate(&te.env);
+    let operator = Address::generate(&te.env);
+    let sub_id = make_usage_enabled_subscription(&te, &subscriber, &merchant);
+    te.client.set_operator(&te.admin, &operator);
+
+    let before = te.client.get_subscription(&sub_id);
+    let ref_str = soroban_sdk::String::from_str(&te.env, "invoice-005");
+    let result = te
+        .client
+        .try_operator_charge_usage_with_ref(&operator, &sub_id, &i128::MAX, &ref_str);
+    assert_eq!(result, Err(Ok(Error::InsufficientPrepaidBalance)));
+
+    let after = te.client.get_subscription(&sub_id);
+    assert_eq!(after.prepaid_balance, before.prepaid_balance);
+    assert_eq!(after.lifetime_charged, before.lifetime_charged);
+    assert_eq!(after.status, before.status);
+}
+
+#[test]
+fn operator_charge_usage_with_reference_accepts_exact_prepaid_balance() {
+    let te = TestEnv::default();
+    let subscriber = Address::generate(&te.env);
+    let merchant = Address::generate(&te.env);
+    let operator = Address::generate(&te.env);
+    let sub_id = make_usage_enabled_subscription(&te, &subscriber, &merchant);
+    te.client.set_operator(&te.admin, &operator);
+
+    let ref_str = soroban_sdk::String::from_str(&te.env, "invoice-006");
+    te.client
+        .operator_charge_usage_with_ref(&operator, &sub_id, &DEPOSIT, &ref_str);
+
+    let after = te.client.get_subscription(&sub_id);
+    assert_eq!(after.prepaid_balance, 0);
+    assert_eq!(after.lifetime_charged, DEPOSIT);
+}
+
+#[test]
+fn operator_charge_usage_with_reference_rejected_after_operator_removed() {
+    let te = TestEnv::default();
+    let subscriber = Address::generate(&te.env);
+    let merchant = Address::generate(&te.env);
+    let operator = Address::generate(&te.env);
+    let sub_id = make_usage_enabled_subscription(&te, &subscriber, &merchant);
+    te.client.set_operator(&te.admin, &operator);
+    te.env.ledger().with_mut(|li| {
+        li.timestamp += crate::admin::CONFIG_COOLDOWN_SECS
+    });
+    te.client.remove_operator(&te.admin);
+
+    let before = te.client.get_subscription(&sub_id);
+    let ref_str = soroban_sdk::String::from_str(&te.env, "invoice-007");
+    let result = te
+        .client
+        .try_operator_charge_usage_with_ref(&operator, &sub_id, &1_000_000i128, &ref_str);
+    assert!(result.is_err(), "removed operator must not charge usage");
+
+    let after = te.client.get_subscription(&sub_id);
+    assert_eq!(after.prepaid_balance, before.prepaid_balance);
+    assert_eq!(after.lifetime_charged, before.lifetime_charged);
+    assert_eq!(after.status, before.status);
+}
+
 // ── Subscription state integrity ──────────────────────────────────────────────
 
 #[test]
@@ -1187,170 +1323,4 @@ fn new_admin_can_remove_operator_after_rotation() {
 
     // ...and the rotated-out admin can no longer remove anything.
     assert!(te.client.try_remove_operator(&te.admin).is_err());
-}
-
-// ── operator_charge_usage_with_reference: adversarial coverage ───────────────
-
-#[test]
-fn operator_charge_usage_with_reference_wrong_operator_rejected_without_mutation() {
-    let te = TestEnv::default();
-    let subscriber = Address::generate(&te.env);
-    let merchant = Address::generate(&te.env);
-    let operator = Address::generate(&te.env);
-    let stranger = Address::generate(&te.env);
-
-    let sub_id = make_usage_enabled_subscription(&te, &subscriber, &merchant);
-    te.client.set_operator(&te.admin, &operator);
-
-    let before = te.client.get_subscription(&sub_id);
-    let ref_str = soroban_sdk::String::from_str(&te.env, "invoice-unauth");
-    let result = te.client.try_operator_charge_usage_with_ref(
-        &stranger,
-        &sub_id,
-        &1_000_000i128,
-        &ref_str,
-    );
-    assert_eq!(result, Err(Ok(Error::Unauthorized)));
-    let after = te.client.get_subscription(&sub_id);
-    assert_eq!(after.prepaid_balance, before.prepaid_balance);
-    assert_eq!(after.lifetime_charged, before.lifetime_charged);
-    assert_eq!(after.status, before.status);
-}
-
-#[test]
-fn operator_charge_usage_with_reference_rejects_nonpositive_amounts_without_mutation() {
-    let te = TestEnv::default();
-    let subscriber = Address::generate(&te.env);
-    let merchant = Address::generate(&te.env);
-    let operator = Address::generate(&te.env);
-    let sub_id = make_usage_enabled_subscription(&te, &subscriber, &merchant);
-    te.client.set_operator(&te.admin, &operator);
-
-    let before = te.client.get_subscription(&sub_id);
-    let ref_str = soroban_sdk::String::from_str(&te.env, "invoice-nonpos");
-    for usage in [i128::MIN, -1, 0] {
-        assert_eq!(
-            te.client
-                .try_operator_charge_usage_with_ref(&operator, &sub_id, &usage, &ref_str),
-            Err(Ok(Error::InvalidAmount))
-        );
-        let after = te.client.get_subscription(&sub_id);
-        assert_eq!(after.prepaid_balance, before.prepaid_balance);
-        assert_eq!(after.lifetime_charged, before.lifetime_charged);
-        assert_eq!(after.status, before.status);
-    }
-}
-
-#[test]
-fn operator_charge_usage_with_reference_rejects_unknown_subscription_without_mutation() {
-    let te = TestEnv::default();
-    let subscriber = Address::generate(&te.env);
-    let merchant = Address::generate(&te.env);
-    let operator = Address::generate(&te.env);
-    let sub_id = make_usage_enabled_subscription(&te, &subscriber, &merchant);
-    te.client.set_operator(&te.admin, &operator);
-
-    let before = te.client.get_subscription(&sub_id);
-    let ref_str = soroban_sdk::String::from_str(&te.env, "invoice-missing");
-    let result = te.client.try_operator_charge_usage_with_ref(
-        &operator,
-        &u32::MAX,
-        &1_000_000i128,
-        &ref_str,
-    );
-    assert_eq!(result, Err(Ok(Error::NotFound)));
-    let after = te.client.get_subscription(&sub_id);
-    assert_eq!(after.prepaid_balance, before.prepaid_balance);
-    assert_eq!(after.lifetime_charged, before.lifetime_charged);
-    assert_eq!(after.status, before.status);
-}
-
-#[test]
-fn operator_charge_usage_with_reference_rejects_amount_above_balance_without_mutation() {
-    let te = TestEnv::default();
-    let subscriber = Address::generate(&te.env);
-    let merchant = Address::generate(&te.env);
-    let operator = Address::generate(&te.env);
-    let sub_id = make_usage_enabled_subscription(&te, &subscriber, &merchant);
-    te.client.set_operator(&te.admin, &operator);
-
-    let before = te.client.get_subscription(&sub_id);
-    let ref_str = soroban_sdk::String::from_str(&te.env, "invoice-overdraw");
-    let result = te.client.try_operator_charge_usage_with_ref(
-        &operator,
-        &sub_id,
-        &i128::MAX,
-        &ref_str,
-    );
-    assert_eq!(result, Err(Ok(Error::InsufficientPrepaidBalance)));
-    let after = te.client.get_subscription(&sub_id);
-    assert_eq!(after.prepaid_balance, before.prepaid_balance);
-    assert_eq!(after.lifetime_charged, before.lifetime_charged);
-    assert_eq!(after.status, before.status);
-}
-
-#[test]
-fn operator_charge_usage_with_reference_accepts_exact_prepaid_balance() {
-    let te = TestEnv::default();
-    let subscriber = Address::generate(&te.env);
-    let merchant = Address::generate(&te.env);
-    let operator = Address::generate(&te.env);
-    let sub_id = make_usage_enabled_subscription(&te, &subscriber, &merchant);
-    te.client.set_operator(&te.admin, &operator);
-
-    let ref_str = soroban_sdk::String::from_str(&te.env, "invoice-exact");
-    te.client
-        .operator_charge_usage_with_ref(&operator, &sub_id, &DEPOSIT, &ref_str);
-    let after = te.client.get_subscription(&sub_id);
-    assert_eq!(after.prepaid_balance, 0);
-    assert_eq!(after.lifetime_charged, DEPOSIT);
-}
-
-#[test]
-fn operator_charge_usage_with_reference_requires_operator_set() {
-    let te = TestEnv::default();
-    let subscriber = Address::generate(&te.env);
-    let merchant = Address::generate(&te.env);
-    let stranger = Address::generate(&te.env);
-    let sub_id = make_usage_enabled_subscription(&te, &subscriber, &merchant);
-
-    let before = te.client.get_subscription(&sub_id);
-    let ref_str = soroban_sdk::String::from_str(&te.env, "invoice-noop");
-    let result = te.client.try_operator_charge_usage_with_ref(
-        &stranger,
-        &sub_id,
-        &1_000_000i128,
-        &ref_str,
-    );
-    assert!(result.is_err(), "usage charge without operator set should fail");
-    let after = te.client.get_subscription(&sub_id);
-    assert_eq!(after.prepaid_balance, before.prepaid_balance);
-    assert_eq!(after.lifetime_charged, before.lifetime_charged);
-}
-
-#[test]
-fn operator_charge_usage_with_reference_revoked_after_remove_operator() {
-    let te = TestEnv::default();
-    let subscriber = Address::generate(&te.env);
-    let merchant = Address::generate(&te.env);
-    let operator = Address::generate(&te.env);
-    let sub_id = make_usage_enabled_subscription(&te, &subscriber, &merchant);
-    te.client.set_operator(&te.admin, &operator);
-    te.env.ledger().with_mut(|li| {
-        li.timestamp += crate::admin::CONFIG_COOLDOWN_SECS
-    });
-    te.client.remove_operator(&te.admin);
-
-    let before = te.client.get_subscription(&sub_id);
-    let ref_str = soroban_sdk::String::from_str(&te.env, "invoice-revoked");
-    let result = te.client.try_operator_charge_usage_with_ref(
-        &operator,
-        &sub_id,
-        &1_000_000i128,
-        &ref_str,
-    );
-    assert!(result.is_err(), "removed operator must not charge usage");
-    let after = te.client.get_subscription(&sub_id);
-    assert_eq!(after.prepaid_balance, before.prepaid_balance);
-    assert_eq!(after.lifetime_charged, before.lifetime_charged);
 }
